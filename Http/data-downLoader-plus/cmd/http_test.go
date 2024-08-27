@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -15,6 +18,15 @@ func startTestHttpServer() *httptest.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/download", func(w http.ResponseWriter, req *http.Request) {
 		fmt.Fprintf(w, "this is a response")
+	})
+	mux.HandleFunc("/upload", func(w http.ResponseWriter, req *http.Request) {
+		defer req.Body.Close()
+		data, err := io.ReadAll(req.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		fmt.Fprintf(w, "JSON request received: %d bytes", len(data))
 	})
 	return httptest.NewServer(mux)
 }
@@ -26,11 +38,26 @@ http: A HTTP client.
 http: <options> server
 
 Options: 
+  -body string
+    	JSON data for HTTP POST request
+  -body-file string
+    	File containing JSON data for HTTP POST request
+  -output string
+    	File path to write the response into
   -verb string
     	HTTP method (default "GET")
 `
 	ts := startTestHttpServer()
 	defer ts.Close()
+
+	outputFile := filepath.Join(t.TempDir(), "file_path.out")
+	jsonBody := `{"id":1}`
+	jsonBodyFile := filepath.Join(t.TempDir(), "data.json")
+
+	err := os.WriteFile(jsonBodyFile, []byte(jsonBody), 0666)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	tests := []struct {
 		name   string
@@ -61,6 +88,30 @@ Options:
 			args:   []string{"-verb", "PUT", "http://localhost"},
 			errMsg: ErrInvalidHTTPMethod.Error(),
 			output: "invalid HTTP method",
+		},
+		{
+			name:   "test5",
+			args:   []string{"-verb", "GET", "-output", outputFile, ts.URL + "/download"},
+			errMsg: "",
+			output: fmt.Sprintf("Data saved to: %s\n", outputFile),
+		},
+		{
+			name:   "test6",
+			args:   []string{"-verb", "POST", "-body", "", ts.URL + "/upload"},
+			errMsg: ErrInvalidHTTPPostRequest.Error(),
+			output: "Http POST request must specify a non-empty JSON body",
+		},
+		{
+			name:   "test7",
+			args:   []string{"-verb", "POST", "-body", jsonBody, ts.URL + "/upload"},
+			errMsg: "",
+			output: fmt.Sprintf("JSON request received: %d bytes\n", len(jsonBody)),
+		},
+		{
+			name:   "test8",
+			args:   []string{"-verb", "POST", "-body-file", jsonBodyFile, ts.URL + "/upload"},
+			errMsg: "",
+			output: fmt.Sprintf("JSON request received: %d bytes\n", len(jsonBody)),
 		},
 	}
 

@@ -26,6 +26,12 @@ http: A HTTP client.
 http: <options> server
 
 Options: 
+  -body string
+    	JSON data for HTTP POST request
+  -body-file string
+    	File containing JSON data for HTTP POST request
+  -output string
+    	File path to write the response into
   -verb string
     	HTTP method (default "GET")
 
@@ -162,7 +168,7 @@ func TestSubCommandInvoke(t *testing.T) {
 		},
 		{
 			name:     "test4",
-			args:     []string{"http", "-verb", "POST", testServerURL},
+			args:     []string{"http", "-verb", "POST", "-body", `"{"id":1}"`, testServerURL},
 			input:    "",
 			output:   []string{"this is a response"},
 			exitCode: 0,
