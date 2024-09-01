@@ -26,10 +26,16 @@ http: A HTTP client.
 http: <options> server
 
 Options: 
+  -basicAuth string
+    	Add basic auth (username:password) credentials to the outgoing request
   -body string
     	JSON data for HTTP POST request
   -body-file string
     	File containing JSON data for HTTP POST request
+  -disable-redirect
+    	Do not follow redirection request
+  -header value
+    	Add one or more headers to the outgoing request (key=value)
   -output string
     	File path to write the response into
   -verb string

@@ -1,18 +1,24 @@
 package cmd
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 )
 
 type httpConfig struct {
-	url      string
-	verb     string
-	postBody string
+	url             string
+	verb            string
+	postBody        string
+	disableRedirect bool
+	headers         []string
+	basicAuth       string
 }
 
 func validateConfig(c httpConfig) error {
@@ -38,29 +44,28 @@ func validateConfig(c httpConfig) error {
 	return nil
 }
 
-func fetchRemoteResource(url string) ([]byte, error) {
-	r, err := http.Get(url)
-	if err != nil {
-		return nil, err
+func addHeaders(c httpConfig, req *http.Request) {
+	for _, h := range c.headers {
+		kv := strings.Split(h, "=")
+		req.Header.Add(kv[0], kv[1])
 	}
-	defer r.Body.Close()
-	return io.ReadAll(r.Body)
 }
 
-func createRemoteResource(url string, body io.Reader) ([]byte, error) {
-	r, err := http.Post(url, "application/json", body)
-	if err != nil {
-		return nil, err
+func addBasicAuth(c httpConfig, req *http.Request) {
+	if len(c.basicAuth) != 0 {
+		up := strings.Split(c.basicAuth, "=")
+		req.SetBasicAuth(up[0], up[1])
 	}
-	defer r.Body.Close()
-
-	return io.ReadAll(r.Body)
 }
 
 func HandleHttp(w io.Writer, args []string) error {
 	var outputFile string
 	var postBodyFile string
 	var responseBody []byte
+	var req *http.Request
+	var httpClient http.Client
+	var ctx context.Context
+	var redirectPolicyFunc func(req *http.Request, via []*http.Request) error
 	c := httpConfig{}
 
 	fs := flag.NewFlagSet("http", flag.ContinueOnError)
@@ -69,6 +74,13 @@ func HandleHttp(w io.Writer, args []string) error {
 	fs.StringVar(&outputFile, "output", "", "File path to write the response into")
 	fs.StringVar(&c.postBody, "body", "", "JSON data for HTTP POST request")
 	fs.StringVar(&postBodyFile, "body-file", "", "File containing JSON data for HTTP POST request")
+	fs.BoolVar(&c.disableRedirect, "disable-redirect", false, "Do not follow redirection request")
+	fs.StringVar(&c.basicAuth, "basicAuth", "", "Add basic auth (username:password) credentials to the outgoing request")
+
+	fs.Func("header", "Add one or more headers to the outgoing request (key=value)", func(s string) error {
+		c.headers = append(c.headers, s)
+		return nil
+	})
 
 	fs.Usage = func() {
 		var usageString = `
@@ -85,15 +97,15 @@ http: <options> server`
 
 	err := fs.Parse(args)
 	if err != nil {
-		return err
+		return FlagParsingError{err}
 	}
 
 	if fs.NArg() != 1 {
-		return ErrNoServerSpecified
+		return InvalidInputError{ErrNoServerSpecified}
 	}
 
 	if postBodyFile != "" && c.postBody != "" {
-		return ErrInvalidHTTPPostCommand
+		return InvalidInputError{ErrInvalidHTTPPostCommand}
 	}
 
 	if c.verb == http.MethodPost && postBodyFile != "" {
@@ -106,24 +118,50 @@ http: <options> server`
 
 	err = validateConfig(c)
 	if err != nil {
-		fmt.Fprint(w, err)
-		return err
+		return InvalidInputError{err}
 	}
 
 	c.url = fs.Arg(0)
 
+	if c.disableRedirect {
+		redirectPolicyFunc = func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 1 {
+				return errors.New("stopped after 1 redirect")
+			}
+			return nil
+		}
+	}
+	httpClient = http.Client{CheckRedirect: redirectPolicyFunc}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
 	switch c.verb {
 	case http.MethodGet:
-		responseBody, err = fetchRemoteResource(c.url)
+		req, err = http.NewRequestWithContext(ctx, http.MethodGet, c.url, nil)
 		if err != nil {
 			return err
 		}
 	case http.MethodPost:
 		postBodyReader := strings.NewReader(c.postBody)
-		responseBody, err = createRemoteResource(c.url, postBodyReader)
+		req, err = http.NewRequestWithContext(ctx, http.MethodPost, c.url, postBodyReader)
 		if err != nil {
 			return err
 		}
+		c.headers = append(c.headers, "Content-Type=application/json")
+	}
+
+	addHeaders(c, req)
+	addBasicAuth(c, req)
+
+	r, err := httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer r.Body.Close()
+
+	responseBody, err = io.ReadAll(r.Body)
+	if err != nil {
+		return err
 	}
 
 	if outputFile != "" {

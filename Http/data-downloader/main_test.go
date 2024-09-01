@@ -24,7 +24,7 @@ func Test_fetchRemoteResource(t *testing.T) {
 
 	expected := "Hello World"
 
-	data, err := fetchRemoteResource(ts.URL)
+	data, err := fetchRemoteResource(http.DefaultClient, ts.URL)
 	if err != nil {
 		t.Error(err)
 	}
