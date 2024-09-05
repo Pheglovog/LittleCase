@@ -6,9 +6,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
+	"net"
 	"net/http"
 	"os"
 	"strings"
+	"subCommand_improve/middleware"
 	"time"
 )
 
@@ -19,6 +22,9 @@ type httpConfig struct {
 	disableRedirect bool
 	headers         []string
 	basicAuth       string
+	report          bool
+	numRequests     int
+	maxIdleConns    int
 }
 
 func validateConfig(c httpConfig) error {
@@ -76,6 +82,9 @@ func HandleHttp(w io.Writer, args []string) error {
 	fs.StringVar(&postBodyFile, "body-file", "", "File containing JSON data for HTTP POST request")
 	fs.BoolVar(&c.disableRedirect, "disable-redirect", false, "Do not follow redirection request")
 	fs.StringVar(&c.basicAuth, "basicAuth", "", "Add basic auth (username:password) credentials to the outgoing request")
+	fs.BoolVar(&c.report, "report", false, "report this http request's latency")
+	fs.IntVar(&c.numRequests, "num-requests", 1, "Number of requests to make")
+	fs.IntVar(&c.maxIdleConns, "max-idle-conns", 0, "Maximum number of idle connections for the connection pool")
 
 	fs.Func("header", "Add one or more headers to the outgoing request (key=value)", func(s string) error {
 		c.headers = append(c.headers, s)
@@ -131,7 +140,30 @@ http: <options> server`
 			return nil
 		}
 	}
-	httpClient = http.Client{CheckRedirect: redirectPolicyFunc}
+	t := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          c.maxIdleConns,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+	httpLatencyMiddleWare := middleware.HttpLatencyClient{
+		Logger:    log.New(os.Stdout, "", log.LstdFlags),
+		Transport: t,
+	}
+	httpClient = http.Client{
+		CheckRedirect: redirectPolicyFunc,
+		Transport:     httpLatencyMiddleWare,
+	}
+	if c.report {
+		l := log.New(w, "", log.LstdFlags)
+		httpClient.Transport = middleware.HttpLatencyClient{Logger: l}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
@@ -153,33 +185,35 @@ http: <options> server`
 	addHeaders(c, req)
 	addBasicAuth(c, req)
 
-	r, err := httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer r.Body.Close()
-
-	responseBody, err = io.ReadAll(r.Body)
-	if err != nil {
-		return err
-	}
-
-	if outputFile != "" {
-		f, err := os.Create(outputFile)
+	for i := 0; i < c.numRequests; i++ {
+		r, err := httpClient.Do(req)
 		if err != nil {
 			return err
 		}
-		defer f.Close()
+		defer r.Body.Close()
 
-		_, err = f.Write(responseBody)
+		responseBody, err = io.ReadAll(r.Body)
 		if err != nil {
 			return err
 		}
 
-		fmt.Fprintf(w, "Data saved to: %s\n", outputFile)
-		return err
-	}
+		if outputFile != "" {
+			f, err := os.Create(outputFile)
+			if err != nil {
+				return err
+			}
+			defer f.Close()
 
-	fmt.Fprintln(w, string(responseBody))
+			_, err = f.Write(responseBody)
+			if err != nil {
+				return err
+			}
+
+			fmt.Fprintf(w, "Data saved to: %s\n", outputFile)
+			return err
+		}
+
+		fmt.Fprintln(w, string(responseBody))
+	}
 	return nil
 }
