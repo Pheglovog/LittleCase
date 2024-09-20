@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+import "users.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "../service";
+
+service Repo {
+    rpc GetRepos (RepoGetRequest) returns (stream RepoGetReply) {}
+    rpc CreateBuild(Repository) returns (stream RepoBuildLog) {}
+    rpc CreateRepo(stream RepoCreateRequest) returns (RepoCreateReply) {}
+}
+
+message RepoGetRequest {
+    string id = 2;
+    string creator_id = 1;
+}
+
+message Repository {
+    string id = 1;
+    string name = 2;
+    string url = 3;
+    User owner = 4;
+}
+
+message RepoGetReply {
+    Repository repo = 1;
+}
+
+message RepoBuildLog {
+  string log_line = 1;
+  google.protobuf.Timestamp timestamp = 2;
+}
+
+message RepoCreateRequest {
+    oneof body {
+        RepoContext context = 1;
+        bytes data = 2;
+    }
+}
+
+message RepoContext {
+    string creator_id = 1;
+    string name =2 ;
+}
+
+message RepoCreateReply {
+    Repository repo = 1;
+    int32 size = 2;
+}
